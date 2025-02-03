@@ -1,0 +1,31 @@
+(key pressed, keypress interval, timestamp) – include all types of keys Crtl, shift etc
+(click [type], click interval, position, timestamp)
+(scroll direction, scroll speed/distance? , scroll interval , timestamp)
+(Concurrent running apps)
+(New app opened, timestamp) – How is he opening new app, search or manual etc?
+(App/Window/File/Directories, focus duration/timestamp) – app category can be thought, active/inactive time?
+(Login, attempts, timestamp)
+(CPU utilization, memory utilization, timestamp)
+
+Multi tasking information?	
+
+Browser
+(URL/Domain, timestamp_start, title, timestamp_end, duration, window ID)
+(number of tabs open, window ID)    
+(tab_open, window_ID)
+(tab_close, Window_ID)
+(key pressed, keypress interval, timestamp, tab-window-id) – include all types of keys Crtl, shift etc
+(click [type], click interval, position, timestamp, , tab-window-id)
+(scroll direction, scroll speed/distance? , scroll interval , timestamp, tab-window-id)
+ (Click on interactive elements, click interval, target, , tab-window-id)
+(path to reach a destination?)
+
+
+Time between page load and first interaction, dwell time on pages, and scroll-to-click ratios.
+Dwell time – press interval, flight time – time interval between 2 presses
+Mouse trajectory
+IDLE period?
+Shortcut gesture
+Scroll depth per page
+
+
