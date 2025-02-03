@@ -7,7 +7,7 @@
 (Login, attempts, timestamp)
 (CPU utilization, memory utilization, timestamp)
 
-Multi tasking information?	
+Multi tasking information?
 
 Browser
 (URL/Domain, timestamp_start, title, timestamp_end, duration, window ID)
