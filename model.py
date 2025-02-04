@@ -9,38 +9,32 @@ from pynput.mouse import Listener as MouseListener
 import threading
 import queue
 import sys
+import math
 
 class UserBehaviorAnalyzer:
     def __init__(self):
-        # Thread-safe queue for events
+        # Existing variables
         self.keyboard_queue = queue.Queue()
         self.mouse_queue = queue.Queue()
-        
-        # Event collection containers
         self.keyboard_events = []
         self.mouse_events = []
-        
-        # Tracking variables
         self.key_timestamps = []
         self.key_presses = 0
         self.key_intervals = []
         self.mouse_clicks = []
         self.mouse_positions = []
         self.mouse_click_timestamps = []
-        
-        # Synchronization events
         self.stop_event = threading.Event()
-        
-        # Listeners
         self.keyboard_listener = None
         self.mouse_listener = None
 
+        # New tracking variables
+        self.mouse_speeds = []
+
     def reset_listeners(self):
-        # Reset queues
+        # Existing resets
         self.keyboard_queue = queue.Queue()
         self.mouse_queue = queue.Queue()
-        
-        # Reset events and tracking variables
         self.keyboard_events = []
         self.mouse_events = []
         self.key_timestamps = []
@@ -49,11 +43,12 @@ class UserBehaviorAnalyzer:
         self.mouse_clicks = []
         self.mouse_positions = []
         self.mouse_click_timestamps = []
-        
-        # Reset stop event
         self.stop_event.clear()
         
-        # Create new listeners
+        # New resets
+        self.mouse_speeds = []
+
+        # Listeners remain same
         self.keyboard_listener = KeyboardListener(
             on_press=self.on_key_press,
             on_release=self.on_key_release
@@ -114,7 +109,7 @@ class UserBehaviorAnalyzer:
     def event_processor(self):
         """Process events from queues and update feature tracking"""
         while not self.stop_event.is_set():
-            # Process keyboard events
+            # Existing keyboard processing
             while not self.keyboard_queue.empty():
                 event = self.keyboard_queue.get()
                 self.keyboard_events.append(event)
@@ -129,19 +124,30 @@ class UserBehaviorAnalyzer:
                     
                     self.key_timestamps.append(current_time)
 
-            # Process mouse events
+            # Modified mouse processing
             while not self.mouse_queue.empty():
                 event = self.mouse_queue.get()
                 self.mouse_events.append(event)
                 
+                # Existing click handling
                 if event['type'] == 'mouse_click':
                     self.mouse_clicks.append((event['x'], event['y']))
                     self.mouse_click_timestamps.append(event['timestamp'])
                 
+                # New mouse speed tracking
                 if event['type'] == 'mouse_move':
-                    self.mouse_positions.append((event['x'], event['y']))
+                    self.mouse_positions.append((event['x'], event['timestamp']))
+                    if len(self.mouse_positions) > 1:
+                        prev_x, prev_time = self.mouse_positions[-2]
+                        prev_y, curr_time = self.mouse_positions[-1]
+                        dx = event['x'] - prev_x
+                        dy = event['y'] - prev_y
+                        distance = math.sqrt(dx**2 + dy**2)
+                        time_diff = curr_time - prev_time
+                        if time_diff > 0:
+                            self.mouse_speeds.append(distance / time_diff)
 
-            time.sleep(0.01)  # Prevent tight loop
+            time.sleep(0.01)
 
     def extract_features(self, duration):
         # 1. Typing speed (cpm)
@@ -221,8 +227,19 @@ class UserBehaviorAnalyzer:
             click_distances.append(distance)
         avg_click_distance = sum(click_distances)/len(click_distances) if click_distances else 0
 
-        # Print features
+        # New Feature 1: Average Mouse Speed
+        avg_mouse_speed = np.mean(self.mouse_speeds) if self.mouse_speeds else 0
+
+        # New Feature 2: Double Click Count
+        double_clicks = 0
+        click_times = self.mouse_click_timestamps
+        for i in range(1, len(click_times)):
+            if click_times[i] - click_times[i-1] < 0.5:  # 500ms threshold
+                double_clicks += 1
+
+        # Update print statements
         print("\n--- Extracted Features ---")
+        # Existing prints
         print(f"Typing Speed (keys/min): {typing_speed:.2f}")
         print(f"Shortcut Keys Pressed: {shortcut_count}")
         print(f"Corrections (Backspace/Delete): {correction_count}")
@@ -230,15 +247,24 @@ class UserBehaviorAnalyzer:
         print(f"Average Flight Time (s): {avg_flight:.3f}")
         print(f"Average Mouse-Key Interval (s): {avg_mouse_interval:.3f}")
         print(f"Average Click Distance (px): {avg_click_distance:.1f}")
+        
+        # New prints
+        print(f"Average Mouse Speed (px/s): {avg_mouse_speed:.1f}")
+        print(f"Double Click Count: {double_clicks}")
 
         return [
+            # Existing features
             typing_speed,
             shortcut_count,
             correction_count,
             avg_dwell,
             avg_flight,
             avg_mouse_interval,
-            avg_click_distance
+            avg_click_distance,
+            
+            # New features added at end
+            avg_mouse_speed,
+            double_clicks
         ]
 
     def collect_data(self, duration=120):
