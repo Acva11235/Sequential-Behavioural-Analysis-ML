@@ -10,6 +10,12 @@ import threading
 import queue
 import sys
 import math
+import win32gui
+import win32process
+import psutil
+import joblib
+# from sklearn.externals import joblib
+
 
 class UserBehaviorAnalyzer:
     def __init__(self):
@@ -27,9 +33,16 @@ class UserBehaviorAnalyzer:
         self.stop_event = threading.Event()
         self.keyboard_listener = None
         self.mouse_listener = None
-
         # New tracking variables
         self.mouse_speeds = []
+        # Nimish 
+        self.app_queue = queue.Queue()
+        self.open_apps = {}  # {hwnd: {title, exe, start, end}}
+        self.focus_history = []  # List of focused apps with timestamps
+        self.app_sessions = []  # Closed app sessions
+        self.app_snapshots = []  # Periodic app state snapshots
+        self.current_focus = None
+        self.anomaly_count = 0
 
     def reset_listeners(self):
         # Existing resets
@@ -47,6 +60,13 @@ class UserBehaviorAnalyzer:
         
         # New resets
         self.mouse_speeds = []
+        # Nimish 
+        self.app_queue = queue.Queue()
+        self.open_apps = {}  # {hwnd: {title, exe, start, end}}
+        self.focus_history = []  # List of focused apps with timestamps
+        self.app_sessions = []  # Closed app sessions
+        self.app_snapshots = []  # Periodic app state snapshots
+        self.current_focus = None
 
         # Listeners remain same
         self.keyboard_listener = KeyboardListener(
@@ -57,6 +77,55 @@ class UserBehaviorAnalyzer:
             on_click=self.on_mouse_click,
             on_move=self.on_mouse_move
         )
+
+
+    def _get_exe_path(self, hwnd):
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            return psutil.Process(pid).exe()
+        except:
+            return "unknown"
+        
+    def app_monitor(self):
+        """Thread to monitor application states"""
+        last_scan = 0
+        while not self.stop_event.is_set():
+            try:
+                # Track focused window
+                current_time = time.time()
+                hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(hwnd)
+                exe = self._get_exe_path(hwnd)
+                
+                if hwnd != self.current_focus:
+                    self.app_queue.put({
+                        'type': 'focus_change',
+                        'hwnd': hwnd,
+                        'title': title,
+                        'exe': exe,
+                        'timestamp': current_time
+                    })
+                
+                # Full scan every 10 seconds
+                if current_time - last_scan > 30:
+                    last_scan = current_time
+                    windows = []
+                    def enum_callback(hwnd, _):
+                        if win32gui.IsWindowVisible(hwnd):
+                            title = win32gui.GetWindowText(hwnd)
+                            windows.append((hwnd, title))
+                    win32gui.EnumWindows(enum_callback, None)
+                    
+                    self.app_queue.put({
+                        'type': 'full_scan',
+                        'windows': windows,
+                        'timestamp': current_time
+                    })
+                
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"App monitoring error: {str(e)}")
+
 
     def on_key_press(self, key):
         current_time = time.time()
@@ -146,6 +215,52 @@ class UserBehaviorAnalyzer:
                         time_diff = curr_time - prev_time
                         if time_diff > 0:
                             self.mouse_speeds.append(distance / time_diff)
+
+            # Process application events
+            while not self.app_queue.empty():
+                event = self.app_queue.get()
+                
+                if event['type'] == 'focus_change':
+                    # Update focus history
+                    if self.focus_history and not self.focus_history[-1]['end']:
+                        self.focus_history[-1]['end'] = event['timestamp']
+                    
+                    self.focus_history.append({
+                        'hwnd': event['hwnd'],
+                        'title': event['title'],
+                        'exe': event['exe'],
+                        'start': event['timestamp'],
+                        'end': None
+                    })
+                    self.current_focus = event['hwnd']
+                
+                elif event['type'] == 'full_scan':
+                    # Update open apps
+                    current_hwnds = {hwnd for hwnd, _ in event['windows']}
+                    
+                    # Detect closed apps
+                    for hwnd in list(self.open_apps.keys()):
+                        if hwnd not in current_hwnds:
+                            closed_app = self.open_apps.pop(hwnd)
+                            closed_app['end'] = event['timestamp']
+                            self.app_sessions.append(closed_app)
+                    
+                    # Detect new apps
+                    for hwnd, title in event['windows']:
+                        if hwnd not in self.open_apps:
+                            self.open_apps[hwnd] = {
+                                'title': title,
+                                'exe': self._get_exe_path(hwnd),
+                                'start': event['timestamp'],
+                                'end': None
+                            }
+                    
+                    # Save snapshot
+                    self.app_snapshots.append({
+                        'timestamp': event['timestamp'],
+                        'open_apps': list(self.open_apps.values())
+                    })
+
 
             time.sleep(0.01)
 
@@ -237,6 +352,37 @@ class UserBehaviorAnalyzer:
             if click_times[i] - click_times[i-1] < 0.5:  # 500ms threshold
                 double_clicks += 1
 
+        # 1. Application session statistics
+        session_durations = [s['end'] - s['start'] for s in self.app_sessions if s['end']]
+        len_session_durations =len(session_durations)
+        
+        
+        # 2. Focus behavior
+        focus_changes = len([f for f in self.focus_history if f['end']])
+        focus_durations = [f['end'] - f['start'] for f in self.focus_history if f['end']]
+        
+        focus_rate = focus_changes / duration if duration > 0 else 0
+        mean_focus_durations = np.mean(focus_durations) if focus_durations else 0
+        
+
+        #3 Tranistions
+        transitions = []
+        prev_exe = None
+        for f in self.focus_history:
+            if prev_exe and f['exe'] != prev_exe:
+                transitions.append(f"{prev_exe}→{f['exe']}")
+            prev_exe = f['exe']
+        count_transitions =len(transitions)
+        num_transition= len(set(transitions))
+        rate_transition = len(transitions) / duration if duration > 0 else 0
+        
+        
+        # 4. Concurrent apps
+        concurrency = [len(s['open_apps']) for s in self.app_snapshots]
+        mean_concurrency =np.mean(concurrency) if concurrency else 0
+        
+        
+
         # Update print statements
         print("\n--- Extracted Features ---")
         # Existing prints
@@ -252,6 +398,18 @@ class UserBehaviorAnalyzer:
         print(f"Average Mouse Speed (px/s): {avg_mouse_speed:.1f}")
         print(f"Double Click Count: {double_clicks}")
 
+        print("\n--- Extracted Application Usage Features ---")
+        
+        print(f"Count of Completed Sessions: {len_session_durations}")
+        print(f"Focus Rate (changes/s): {focus_rate:.2f}")
+        print(f"Mean Focus Durations (s): {mean_focus_durations:.2f}")
+        print(f"Transition Count: {count_transitions}")
+        print(f"Unique Transitions: {num_transition}")
+        print(f"Transition Rate (transitions/s): {rate_transition:.2f}")
+
+        print(f"Mean Concurrency: {mean_concurrency:.2f}")
+        
+
         return [
             # Existing features
             typing_speed,
@@ -264,10 +422,21 @@ class UserBehaviorAnalyzer:
             
             # New features added at end
             avg_mouse_speed,
-            double_clicks
+            double_clicks,
+
+            
+            len_session_durations,
+            focus_rate*100,
+            mean_focus_durations,
+            count_transitions,
+            num_transition,
+            rate_transition*100,
+            mean_concurrency,
+           
+
         ]
 
-    def collect_data(self, duration=120):
+    def collect_data(self, duration=30):
         # Reset listeners for each data collection
         self.reset_listeners()
         
@@ -278,6 +447,9 @@ class UserBehaviorAnalyzer:
         # Start event processor thread
         processor_thread = threading.Thread(target=self.event_processor)
         processor_thread.start()
+
+        app_monitor_thread = threading.Thread(target=self.app_monitor)
+        app_monitor_thread.start()
         
         print(f"Starting data collection for {duration} seconds...")
         start_time = time.time()
@@ -292,56 +464,101 @@ class UserBehaviorAnalyzer:
         self.keyboard_listener.stop()
         self.mouse_listener.stop()
         processor_thread.join()
+        app_monitor_thread.join()
         
         print("Data collection complete.")
 
-    def run_intrusion_detection(self):
+    def run_intrusion_detection(self, model_filename="intrusion_model.joblib"):
         # Collect multiple training samples
         training_features = []
-        for _ in range(5):  # Collect 5 training samples
-            self.collect_data(duration=20)
-            features = self.extract_features(duration=20)
+        for _ in range(10):  # or however many samples you want
+            self.collect_data(duration=60)
+            features = self.extract_features(duration=30)
             training_features.append(features)
-        
+
         # Convert to numpy array for standardization
         X_train = np.array(training_features)
         
         # Standardize features
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
+        self.scaler = StandardScaler()
+        X_train_scaled = self.scaler.fit_transform(X_train)
         
-        # Train Isolation Forest with higher contamination
-        clf = IsolationForest(
-            contamination=0.3,  # Increased contamination factor
-            random_state=42, 
+        # Train Isolation Forest
+        self.clf = IsolationForest(
+            contamination=0.38,
+            random_state=42,
             max_samples='auto',
             bootstrap=True,
-            n_estimators=100  # Increased number of trees
+            n_estimators=200
         )
-        clf.fit(X_train_scaled)
-        
-        # Run inference
-        print("\n--- Inference Results ----------------------------------------------------------------------------------------------------------")
-        for i in range(5):
-            # Collect data for 10 seconds
-            self.collect_data(duration=10)
+        self.clf.fit(X_train_scaled)
+
+        # Save both the trained model and the scaler
+        joblib.dump(self.clf, model_filename)
+        joblib.dump(self.scaler, model_filename.replace(".joblib", "_scaler.joblib"))
+        print(f"Model saved to {model_filename}")
+        print(f"Scaler saved to {model_filename.replace('.joblib', '_scaler.joblib')}")
+
+  
+    def load_model(self, model_filename="intrusion_model.joblib"):
+        try:
+            self.clf = joblib.load(model_filename)  # Load the IsolationForest
+            self.scaler = joblib.load(model_filename.replace(".joblib", "_scaler.joblib"))  # Load the scaler
+            print(f"Model loaded from {model_filename}")
+            return True
+        except FileNotFoundError:
+            print(f"Model file {model_filename} not found. Training a new model.")
+            return False
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return False
+
+    def run_inference(self, model_filename="intrusion_model.joblib"):
+    # Load model (and scaler)
+        if not self.load_model(model_filename):
+            # If loading fails, it trains a new model and stops
+            # Alternatively, you could just call run_intrusion_detection here
+            self.run_intrusion_detection(model_filename)
+            return
+
+        # Now run inference
+        print("\n--- Inference Results --------------------------------------------------------------------")
+        for i in range(7):
+            self.collect_data(duration=30)
+            inference_features = self.extract_features(duration=30)
             
-            # Extract features
-            inference_features = self.extract_features(duration=10)
-            
-            # Scale inference features using the same scaler
-            inference_scaled = scaler.transform([inference_features])
+            # Scale with the same scaler
+            inference_scaled = self.scaler.transform([inference_features])
             
             # Predict
-            prediction = clf.predict(inference_scaled)
-            
+            prediction = self.clf.predict(inference_scaled)
+            is_anomaly = prediction[0] == -1
+            if is_anomaly:
+                self.anomaly_count += 1
+                print(f"! ALERT: Anomalies detected ({self.anomaly_count}/2) !")
+                
+                # Check if threshold reached
+                if self.anomaly_count >= 2:
+                    print("\n! SYSTEM FREEZE ! Multiple anomalies detected.")
+                    time.sleep(10)
+                    print("Resuming operations...")
+                    self.anomaly_count = 0  
+
             print(f"Inference {i+1}: {'Normal' if prediction[0] == 1 else 'Anomaly Detected'}")
             print("Features:", inference_features)
-            print("---"*15)
+            print("---" * 15)
+
 
 def main():
     analyzer = UserBehaviorAnalyzer()
-    analyzer.run_intrusion_detection()
+    # Check if the model exists, if not train and save it
+    if not analyzer.load_model():
+        analyzer.run_intrusion_detection()
+
+    # Run Inference (you can call this separately later without retraining)
+    
+    analyzer.run_inference()
+
 
 if __name__ == "__main__":
     main()
