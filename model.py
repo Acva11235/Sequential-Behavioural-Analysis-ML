@@ -295,7 +295,7 @@ class UserBehaviorAnalyzer:
         clf.fit(X_train_scaled)
         
         # Run inference
-        print("\n--- Inference Results ---")
+        print("\n--- Inference Results ----------------------------------------------------------------------------------------------------------")
         for i in range(5):
             # Collect data for 10 seconds
             self.collect_data(duration=10)
@@ -311,7 +311,7 @@ class UserBehaviorAnalyzer:
             
             print(f"Inference {i+1}: {'Normal' if prediction[0] == 1 else 'Anomaly Detected'}")
             print("Features:", inference_features)
-            print("---")
+            print("---"*15)
 
 def main():
     analyzer = UserBehaviorAnalyzer()
